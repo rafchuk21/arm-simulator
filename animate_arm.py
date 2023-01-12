@@ -1,13 +1,15 @@
 import numpy as np
 from TwoJointArm import TwoJointArm
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 import time
 
 arm = TwoJointArm()
 
-dt = .01
+fps = 30
+dt = 1/fps
 t0 = 0
-tf = 5
+tf = 10
 
 def get_arm_joints(state):
     (joint_pos, eff_pos) = arm.get_lin_joint_pos(state[:2])
@@ -37,43 +39,51 @@ def eval_interpolation(coeffs, t):
 coeffs = cubic_interpolation(0, 3, np.matrix([0, 0, 0, 0]).T, np.matrix([np.pi/2, -np.pi/2, 0, 0]))
 
 (xs, ys) = get_arm_joints(arm.state)
-plt.ion()
 fig = plt.figure()
-ax = fig.add_subplot(2,2,(1,3))
+ax = fig.add_subplot(1,1,1)
+ax.axis('equal')
+ax.grid(True)
 ax.set_xlim((-arm.l1-arm.l2, arm.l1+arm.l2))
 ax.set_ylim((-arm.l1-arm.l2, arm.l1+arm.l2))
-arm_line, target_line, = ax.plot(xs, ys, 'r', xs, ys, 'b')
+target_line, arm_line, = ax.plot(xs, ys, 'r-o', xs, ys, 'b--o')
+ax.legend([target_line, arm_line], ["Current State", "Target State"])
 
+'''
 ax_v = fig.add_subplot(2,2,2)
 ax_c = fig.add_subplot(2,2,4)
 ax_v.set_xlim((t0, tf))
 ax_c.set_xlim((t0, tf))
 v_line1, v_line2 = ax_v.plot([], [], 'r', [], [], 'b')
 c_line1, c_line2 = ax_c.plot([], [], 'r', [], [], 'b')
-t_vec = [-dt]
+t_vec = []
+'''
 
-for t in np.arange(t0, tf, dt):
-    t_vec = np.append(t_vec, t)
+def control_law(t, state):
     target_state = eval_interpolation(coeffs, t)
-    err = target_state - arm.state
-    arm.step(arm.feed_forward(target_state) + 10*np.matrix([[1, 0, 0, 0], [0, 1, 0, 0]])*err, dt)
-    (xs, ys) = get_arm_joints(arm.state)
-    arm_line.set_xdata(xs)
-    arm_line.set_ydata(ys)
-    (xs, ys) = get_arm_joints(target_state)
-    target_line.set_xdata(xs)
-    target_line.set_ydata(ys)
+    err = target_state - state
+    return arm.feed_forward(target_state) + 10*np.matrix([[1,0,0,0], [0,1,0,0]])*err
 
-    v_line1.set_xdata(t_vec)
-    c_line1.set_xdata(t_vec)
-    v_line1.set_ydata(arm.voltage_log[:,0].A1)
-    c_line1.set_ydata(arm.current_log[:,0].A1)
-    v_line2.set_xdata(t_vec)
-    c_line2.set_xdata(t_vec)
-    v_line2.set_ydata(arm.voltage_log[:,1].A1)
-    c_line2.set_ydata(arm.current_log[:,1].A1)
-    
-    ax_v.set_ylim((np.min(arm.voltage_log), np.max(arm.voltage_log)))
-    ax_c.set_ylim((np.min(arm.current_log), np.max(arm.current_log)))
-    fig.canvas.draw()
-    fig.canvas.flush_events()
+arm.control_law = control_law
+
+sim_results = arm.simulate((t0, tf), t_eval = np.arange(t0, tf, dt))
+
+def init():
+    (xs, ys) = get_arm_joints(sim_results.y[:,0])
+    arm_line.set_data(xs, ys)
+    ax.set_xlim((-arm.l1-arm.l2, arm.l1+arm.l2))
+    ax.set_ylim((-arm.l1-arm.l2, arm.l1+arm.l2))
+    return arm_line, target_line
+
+def animate(i):
+    (xs, ys) = get_arm_joints(sim_results.y[:,i])
+    arm_line.set_data(xs, ys)
+    (xs, ys) = get_arm_joints(eval_interpolation(coeffs, sim_results.t[i]))
+    target_line.set_data(xs, ys)
+    ax.set_xlim((-arm.l1-arm.l2, arm.l1+arm.l2))
+    ax.set_ylim((-arm.l1-arm.l2, arm.l1+arm.l2))
+    return arm_line, target_line
+
+nframes = len(sim_results.y.T)
+anim = animation.FuncAnimation(fig, animate, init_func = init, frames = nframes, interval = int(dt*1000), blit=True)
+plt.show()
+anim.save('sim.gif', writer='imagemagick')

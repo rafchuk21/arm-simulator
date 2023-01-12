@@ -1,5 +1,5 @@
 import numpy as np
-import scipy
+from scipy.integrate import solve_ivp
 
 class TwoJointArm(object):
     def __init__(self):
@@ -47,6 +47,8 @@ class TwoJointArm(object):
 
         self.voltage_log = np.matrix([0,0])
         self.current_log = np.matrix([0,0])
+
+        self.control_law = lambda t, state: np.matrix([0,0]).T
     
     # Returns angular position of joints
     def get_ang_pos(self):
@@ -163,8 +165,9 @@ class TwoJointArm(object):
     def dynamics(self, state, u):
         (D, C, G) = self.dynamics_matrices(state)
         omega_vec = state[2:]
-
-        torque = self.K3*u - self.K4*omega_vec
+        basic_torque = self.K3*u
+        back_emf_loss = self.K4*omega_vec
+        torque = basic_torque - back_emf_loss
         alpha_vec = D.I*(torque - C*omega_vec - G)
         return np.concatenate((omega_vec, alpha_vec))
 
@@ -180,3 +183,15 @@ class TwoJointArm(object):
         (D, C, G) = self.dynamics_matrices(state)
         omegas = state[2:]
         return self.K3.I * (D*alpha + C*omegas + G + self.K4*omegas)
+    
+    def get_dstate(self, t, state):
+        state = np.asmatrix(state).T
+        u = self.control_law(t, state)
+        dstate = self.dynamics(state, u).A1
+        return dstate
+    
+    def simulate(self, t_span, initial_state = None, t_eval = None):
+        if initial_state is None:
+            initial_state = self.state.A1
+        return solve_ivp(self.get_dstate, t_span, initial_state, t_eval = t_eval)
+
