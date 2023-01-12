@@ -48,7 +48,10 @@ class TwoJointArm(object):
         self.voltage_log = np.matrix([0,0])
         self.current_log = np.matrix([0,0])
 
-        self.control_law = lambda t, state: np.matrix([0,0]).T
+        # Control law f(t, state) = voltage to each joint, as a column matrix. Defaults to 0 effort.
+        # Must be able to pass in multiple (t, state) as [t1, t2, t3...] and [state1, state2, state3...] arrays
+        #   if you want to use the voltage and current log functionality.
+        self.control_law = lambda t, state: np.asmatrix(np.zeros((2, np.size(state,1))))
     
     # Returns angular position of joints
     def get_ang_pos(self):
@@ -171,6 +174,8 @@ class TwoJointArm(object):
         alpha_vec = D.I*(torque - C*omega_vec - G)
         return np.concatenate((omega_vec, alpha_vec))
 
+    # Step the arm forward with a given input. Updates the internal state.
+    # Much slower than using simulate().
     def step(self, u, dt):
         u = np.clip(u, -12, 12)
         self.state = self.RK4(lambda s: self.dynamics(s, u), self.state, dt)
@@ -179,19 +184,43 @@ class TwoJointArm(object):
         self.current_log = np.concatenate((self.current_log, current.T))
         return self.state
     
+    # Determine the feed forward to satisfy given state and accelerations.
     def feed_forward(self, state, alpha = np.matrix([0,0]).T):
         (D, C, G) = self.dynamics_matrices(state)
         omegas = state[2:]
         return self.K3.I * (D*alpha + C*omegas + G + self.K4*omegas)
     
+    # Use the pre-assigned control law, and given state and time, to determine
+    # the rate of change of the state 
     def get_dstate(self, t, state):
         state = np.asmatrix(state).T
         u = self.control_law(t, state)
         dstate = self.dynamics(state, u).A1
         return dstate
     
+    # Perform the simulation using the arm's assigned control law.
+    # Does not update or use the arm's internal state.
     def simulate(self, t_span, initial_state = None, t_eval = None):
         if initial_state is None:
             initial_state = self.state.A1
         return solve_ivp(self.get_dstate, t_span, initial_state, t_eval = t_eval)
+    
+    # Reconstruct the voltage history using the simulation results.
+    def get_voltage_log(self, sim_solution):
+        return self.control_law(sim_solution.t, sim_solution.y)
 
+    # Get the current given a voltage and state.
+    # If multiple voltages and states are given as matrices where each column is an entry,
+    # will return all the currents corresponding to the pairs.
+    def get_current(self, voltage, state):
+        omegas = state[2:]
+        omegas[0,:] = omegas[0,:] * self.G1
+        omegas[1,:] = omegas[1,:] * self.G2
+        stall_voltage = voltage - omegas/self.Kv
+        current = stall_voltage/self.R
+        return current
+
+    # Reconstruct the current draw history using the simulation results.
+    def get_current_log(self, sim_solution):
+        voltage = self.get_voltage_log(sim_solution)
+        return self.get_current(voltage, sim_solution.y)

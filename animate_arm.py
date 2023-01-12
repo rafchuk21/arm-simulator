@@ -9,7 +9,7 @@ arm = TwoJointArm()
 fps = 30
 dt = 1/fps
 t0 = 0
-tf = 10
+tf = 5
 
 def get_arm_joints(state):
     (joint_pos, eff_pos) = arm.get_lin_joint_pos(state[:2])
@@ -30,61 +30,110 @@ def cubic_interpolation(t0, tf, state0, statef):
     return coeffs
 
 def eval_interpolation(coeffs, t):
-    if t < 0:
-        t = 0
-    elif t > 3:
-        t = 3
+    t = np.clip(t, 0, 3)
     return (np.concatenate((pos_row(t), vel_row(t))) * coeffs).reshape(4,1)
 
-coeffs = cubic_interpolation(0, 3, np.matrix([0, 0, 0, 0]).T, np.matrix([np.pi/2, -np.pi/2, 0, 0]))
+#coeffs = cubic_interpolation(0, 3, np.matrix([np.pi/3, -np.pi/3, 0, 0]).T, np.matrix([-np.pi/3, np.pi/3, 0, 0]))
+coeffs = cubic_interpolation(0, 3, np.concatenate((arm.inv_kinematics(np.matrix([1, -.2]).T, True), np.matrix([0,0]).T)), \
+    np.concatenate((arm.inv_kinematics(np.matrix([-1.8, 1]).T), np.matrix([0,0]).T)))
 
 (xs, ys) = get_arm_joints(arm.state)
 fig = plt.figure()
-ax = fig.add_subplot(1,1,1)
-ax.axis('equal')
+ax = fig.add_subplot(4,4,(1,14))
+ax.axis('square')
 ax.grid(True)
-ax.set_xlim((-arm.l1-arm.l2, arm.l1+arm.l2))
-ax.set_ylim((-arm.l1-arm.l2, arm.l1+arm.l2))
+ax.set_xlim(-arm.l1-arm.l2, arm.l1+arm.l2)
+ax.set_ylim(-arm.l1-arm.l2, arm.l1+arm.l2)
 target_line, arm_line, = ax.plot(xs, ys, 'b--o', xs, ys, 'r-o')
-ax.legend([arm_line, target_line], ["Current State", "Target State"], loc='lower right')
+ax.legend([arm_line, target_line], ["Current State", "Target State"], loc='lower left')
 
-'''
-ax_v = fig.add_subplot(2,2,2)
-ax_c = fig.add_subplot(2,2,4)
+
+ax_v = fig.add_subplot(4,4,4)
+ax_c = fig.add_subplot(4,4,12)
 ax_v.set_xlim((t0, tf))
 ax_c.set_xlim((t0, tf))
+ax_v.grid(True)
+ax_c.grid(True)
+ax_v.yaxis.set_label("Voltage (V)")
+ax_c.yaxis.set_label("Current (A)")
 v_line1, v_line2 = ax_v.plot([], [], 'r', [], [], 'b')
 c_line1, c_line2 = ax_c.plot([], [], 'r', [], [], 'b')
-t_vec = []
-'''
 
+# Control law for FF + kP control.
 def control_law(t, state):
-    target_state = eval_interpolation(coeffs, t)
-    err = target_state - state
-    return arm.feed_forward(target_state) + 10*np.matrix([[1,0,0,0], [0,1,0,0]])*err
+    kP1 = 20
+    kD1 = 0
+    kP2 = 20
+    kD2 = 0
+
+    PD_matrix = np.matrix([[kP1, 0, kD1, 0], [0, kP2, 0, kD2]])
+
+    # If only one state is passed in, get the voltages
+    if np.size(state, 1) == 1:
+        target_state = eval_interpolation(coeffs, t)
+        err = target_state - state
+        u = arm.feed_forward(target_state) + PD_matrix*err
+    else:
+        # If multiple states are passed in as a matrix, with each column representing a state, return
+        # the voltages for each of those states. This is used for figuring out the voltage at each
+        # time using the simulation results.
+        u = []
+        for i in np.arange(np.size(state, 1)):
+            curr_t = t[i]
+            curr_s = np.asmatrix(state[:,i]).T
+            target_state = eval_interpolation(coeffs, curr_t)
+            err = target_state - curr_s
+            new_u = arm.feed_forward(target_state) + PD_matrix*err
+            if np.size(u) == 0:
+                u = new_u
+            else:
+                u = np.concatenate((u, new_u), 1)
+    return np.clip(u, -12, 12)
 
 arm.control_law = control_law
 
-sim_results = arm.simulate((t0, tf), t_eval = np.arange(t0, tf, dt))
+sim_results = arm.simulate((t0, tf), initial_state = eval_interpolation(coeffs, 0).A1, t_eval = np.arange(t0, tf, dt))
+time_vec = sim_results.t
+voltage_log = arm.get_voltage_log(sim_results)
+current_log = arm.get_current_log(sim_results)
+
+ax_v.set_ylim((np.min(voltage_log), np.max(voltage_log)))
+ax_c.set_ylim((np.min(current_log), np.max(current_log)))
+
+ax_v.legend([v_line1, v_line2], ["Joint 1 Voltage", "Joint 2 Voltage"], loc='lower center', bbox_to_anchor = (0.5, -1))
+ax_c.legend([c_line1, c_line2], ["Joint 1 Current", "Joint 2 Current"], loc='lower center', bbox_to_anchor = (0.5, -1))
 
 def init():
     (xs, ys) = get_arm_joints(sim_results.y[:,0])
     arm_line.set_data(xs, ys)
     target_line.set_data(xs, ys)
-    ax.set_xlim((-arm.l1-arm.l2, arm.l1+arm.l2))
-    ax.set_ylim((-arm.l1-arm.l2, arm.l1+arm.l2))
-    return arm_line, target_line
+    ax.set_xlim(-arm.l1-arm.l2, arm.l1+arm.l2)
+    ax.set_ylim(-arm.l1-arm.l2, arm.l1+arm.l2)
+    v_line1.set_data([], [])
+    v_line2.set_data([], [])
+    c_line1.set_data([], [])
+    c_line2.set_data([], [])
+    return arm_line, target_line, v_line1, v_line2, c_line1, c_line2, 
 
 def animate(i):
-    (xs, ys) = get_arm_joints(sim_results.y[:,i])
+    (xs, ys) = get_arm_joints(sim_results.y[:4,i])
     arm_line.set_data(xs, ys)
     (xs, ys) = get_arm_joints(eval_interpolation(coeffs, sim_results.t[i]))
     target_line.set_data(xs, ys)
-    ax.set_xlim((-arm.l1-arm.l2, arm.l1+arm.l2))
-    ax.set_ylim((-arm.l1-arm.l2, arm.l1+arm.l2))
-    return arm_line, target_line
+    ax.set_xlim(-arm.l1-arm.l2, arm.l1+arm.l2)
+    ax.set_ylim(-arm.l1-arm.l2, arm.l1+arm.l2)
+
+    v_line1.set_data(time_vec[:i], voltage_log[0,:i])
+    v_line2.set_data(time_vec[:i], voltage_log[1,:i])
+
+    c_line1.set_data(time_vec[:i], current_log[0,:i])
+    c_line2.set_data(time_vec[:i], current_log[1,:i])
+
+    return arm_line, target_line, v_line1, v_line2, c_line1, c_line2, 
 
 nframes = len(sim_results.y.T)
 anim = animation.FuncAnimation(fig, animate, init_func = init, frames = nframes, interval = int(dt*1000), blit=False, repeat=False)
-#plt.show()
-anim.save('sim.gif', writer='imagemagick')
+
+
+plt.show()                                     # Uncomment this to show plot in window
+#anim.save('sim.gif', writer='imagemagick')     # Uncomment this to save plot as gif
