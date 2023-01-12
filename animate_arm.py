@@ -45,8 +45,8 @@ ax.axis('equal')
 ax.grid(True)
 ax.set_xlim((-arm.l1-arm.l2, arm.l1+arm.l2))
 ax.set_ylim((-arm.l1-arm.l2, arm.l1+arm.l2))
-target_line, arm_line, = ax.plot(xs, ys, 'r-o', xs, ys, 'b--o')
-ax.legend([target_line, arm_line], ["Current State", "Target State"])
+target_line, arm_line, = ax.plot(xs, ys, 'b--o', xs, ys, 'r-o')
+ax.legend([arm_line, target_line], ["Current State", "Target State"], loc='lower right')
 
 '''
 ax_v = fig.add_subplot(2,2,2)
@@ -70,6 +70,7 @@ sim_results = arm.simulate((t0, tf), t_eval = np.arange(t0, tf, dt))
 def init():
     (xs, ys) = get_arm_joints(sim_results.y[:,0])
     arm_line.set_data(xs, ys)
+    target_line.set_data(xs, ys)
     ax.set_xlim((-arm.l1-arm.l2, arm.l1+arm.l2))
     ax.set_ylim((-arm.l1-arm.l2, arm.l1+arm.l2))
     return arm_line, target_line
@@ -84,6 +85,6 @@ def animate(i):
     return arm_line, target_line
 
 nframes = len(sim_results.y.T)
-anim = animation.FuncAnimation(fig, animate, init_func = init, frames = nframes, interval = int(dt*1000), blit=True)
-plt.show()
+anim = animation.FuncAnimation(fig, animate, init_func = init, frames = nframes, interval = int(dt*1000), blit=False, repeat=False)
+#plt.show()
 anim.save('sim.gif', writer='imagemagick')
