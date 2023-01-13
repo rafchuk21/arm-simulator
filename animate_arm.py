@@ -32,7 +32,7 @@ def cubic_interpolation(t0, tf, state0, statef):
 
 start_state = np.concatenate((arm.inv_kinematics(np.matrix([1, -.2]).T, True), np.matrix([0,0]).T))
 middle_state = np.concatenate((arm.inv_kinematics(np.matrix([-1.8, 1]).T), np.matrix([0,0]).T))
-end_state = np.concatenate((arm.inv_kinematics(np.matrix([1.5, .5]).T, True), np.matrix([0,0]).T))
+end_state = np.concatenate((arm.inv_kinematics(np.matrix([1.5, 1]).T, False), np.matrix([0,0]).T))
 
 t0 = 0
 t1 = 3
@@ -54,6 +54,13 @@ ax.set_xlim(-arm.l1-arm.l2, arm.l1+arm.l2)
 ax.set_ylim(-arm.l1-arm.l2, arm.l1+arm.l2)
 target_line, arm_line, = ax.plot(xs, ys, 'b--o', xs, ys, 'r-o')
 ax.legend([arm_line, target_line], ["Current State", "Target State"], loc='lower left')
+
+fig2, ax2 = plt.subplots()
+ax2.axis('square')
+ax2.grid(True)
+ax2.set_xlim(-np.pi, np.pi)
+ax2.set_ylim(-np.pi, np.pi)
+state_line, = ax2.plot([], [])
 
 
 ax_v = fig.add_subplot(4,4,4)
@@ -121,7 +128,8 @@ def init():
     v_line2.set_data([], [])
     c_line1.set_data([], [])
     c_line2.set_data([], [])
-    return arm_line, target_line, v_line1, v_line2, c_line1, c_line2, 
+    state_line.set_data([], [])
+    return arm_line, target_line, v_line1, v_line2, c_line1, c_line2, state_line,
 
 def animate(i):
     (xs, ys) = get_arm_joints(sim_results.y[:4,i])
@@ -137,7 +145,11 @@ def animate(i):
     c_line1.set_data(time_vec[:i], current_log[0,:i])
     c_line2.set_data(time_vec[:i], current_log[1,:i])
 
-    return arm_line, target_line, v_line1, v_line2, c_line1, c_line2, 
+    theta1 = sim_results.y[0, :(i+1)]
+    theta2 = sim_results.y[1, :(i+1)]
+    state_line.set_data(theta1, theta2)
+
+    return arm_line, target_line, v_line1, v_line2, c_line1, c_line2, state_line,
 
 nframes = len(sim_results.y.T)
 anim = animation.FuncAnimation(fig, animate, init_func = init, frames = nframes, interval = int(dt*1000), blit=False, repeat=False)
