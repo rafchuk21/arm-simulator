@@ -1,5 +1,6 @@
 import numpy as np
 from TwoJointArm import TwoJointArm
+from Trajectory import Trajectory
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import time
@@ -9,7 +10,7 @@ arm = TwoJointArm()
 fps = 30
 dt = 1/fps
 t0 = 0
-tf = 5
+tf = 10
 
 def get_arm_joints(state):
     (joint_pos, eff_pos) = arm.get_lin_joint_pos(state[:2])
@@ -29,13 +30,20 @@ def cubic_interpolation(t0, tf, state0, statef):
     coeffs = lhs.I*rhs
     return coeffs
 
-def eval_interpolation(coeffs, t):
-    t = np.clip(t, 0, 3)
-    return (np.concatenate((pos_row(t), vel_row(t))) * coeffs).reshape(4,1)
+start_state = np.concatenate((arm.inv_kinematics(np.matrix([1, -.2]).T, True), np.matrix([0,0]).T))
+middle_state = np.concatenate((arm.inv_kinematics(np.matrix([-1.8, 1]).T), np.matrix([0,0]).T))
+end_state = np.concatenate((arm.inv_kinematics(np.matrix([1.5, .5]).T, True), np.matrix([0,0]).T))
 
-#coeffs = cubic_interpolation(0, 3, np.matrix([np.pi/3, -np.pi/3, 0, 0]).T, np.matrix([-np.pi/3, np.pi/3, 0, 0]))
-coeffs = cubic_interpolation(0, 3, np.concatenate((arm.inv_kinematics(np.matrix([1, -.2]).T, True), np.matrix([0,0]).T)), \
-    np.concatenate((arm.inv_kinematics(np.matrix([-1.8, 1]).T), np.matrix([0,0]).T)))
+t0 = 0
+t1 = 3
+t2 = 4
+t3 = 8
+
+traj1 = Trajectory.from_coeffs(cubic_interpolation(t0, t1, start_state, middle_state), t0, t1)
+traj2 = Trajectory.from_coeffs(cubic_interpolation(t1, t2, middle_state, middle_state), t1, t2)
+traj3 = Trajectory.from_coeffs(cubic_interpolation(t2, t3, middle_state, end_state), t2, t3)
+
+traj = traj1.append(traj2).append(traj3)
 
 (xs, ys) = get_arm_joints(arm.state)
 fig = plt.figure()
@@ -70,7 +78,7 @@ def control_law(t, state):
 
     # If only one state is passed in, get the voltages
     if np.size(state, 1) == 1:
-        target_state = eval_interpolation(coeffs, t)
+        target_state = traj.sample(t)[:4,:]
         err = target_state - state
         u = arm.feed_forward(target_state) + PD_matrix*err
     else:
@@ -81,7 +89,7 @@ def control_law(t, state):
         for i in np.arange(np.size(state, 1)):
             curr_t = t[i]
             curr_s = np.asmatrix(state[:,i]).T
-            target_state = eval_interpolation(coeffs, curr_t)
+            target_state = traj.sample(curr_t)[:4,:]
             err = target_state - curr_s
             new_u = arm.feed_forward(target_state) + PD_matrix*err
             if np.size(u) == 0:
@@ -92,7 +100,7 @@ def control_law(t, state):
 
 arm.control_law = control_law
 
-sim_results = arm.simulate((t0, tf), initial_state = eval_interpolation(coeffs, 0).A1, t_eval = np.arange(t0, tf, dt))
+sim_results = arm.simulate((t0, tf), initial_state = traj.sample(0)[:4,:].A1, t_eval = np.arange(t0, tf, dt))
 time_vec = sim_results.t
 voltage_log = arm.get_voltage_log(sim_results)
 current_log = arm.get_current_log(sim_results)
@@ -118,7 +126,7 @@ def init():
 def animate(i):
     (xs, ys) = get_arm_joints(sim_results.y[:4,i])
     arm_line.set_data(xs, ys)
-    (xs, ys) = get_arm_joints(eval_interpolation(coeffs, sim_results.t[i]))
+    (xs, ys) = get_arm_joints(traj.sample(sim_results.t[i])[:4,:])
     target_line.set_data(xs, ys)
     ax.set_xlim(-arm.l1-arm.l2, arm.l1+arm.l2)
     ax.set_ylim(-arm.l1-arm.l2, arm.l1+arm.l2)
