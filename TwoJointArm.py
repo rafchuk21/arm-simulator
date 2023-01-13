@@ -138,6 +138,9 @@ class TwoJointArm(object):
 
         return (D, C, G)
     
+
+
+    
     # Perform Runge-Kutta 4 integration
     def RK4(self, f, x, dt):
         a = f(x)
