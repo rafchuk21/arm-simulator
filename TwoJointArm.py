@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.integrate import solve_ivp
 import controls_util as controls
+import time
 
 class TwoJointArm(object):
     def __init__(self):
@@ -284,8 +285,15 @@ class TwoJointArm(object):
 
     
     def get_K(self, state = None):
+        """ Get the optimal K matrix using LQR to minimize the cost per Q, R matrices.
+            u = K(r-x) + u_ff
+        
+        Argument:
+            state: State to find optimal K matrix for. (Default: arm current state)
+        """
         if state is None:
             state = self.state
-        
+
         (A,B) = self.linearize(state)
-        return controls.lqr(A, B, self.Q, self.R)
+        K = controls.lqr(A, B, self.Q, self.R)
+        return K

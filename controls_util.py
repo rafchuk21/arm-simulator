@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.linalg import solve_discrete_are
+import time
 
 def linearize(f, x: np.matrix, u: np.matrix, eps = 1e-4) -> tuple[np.matrix, np.matrix]:
     """Linearize a system to the form x-dot = A(x-x0) + B(u-u0), where:

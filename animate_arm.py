@@ -114,7 +114,7 @@ kP1 = 20
 kD1 = 0
 kP2 = 20
 kD2 = 0
-useLQR = False
+useLQR = True
 
 # Control law for FF + kP control.
 def control_law(t, state):
