@@ -88,15 +88,14 @@ def control_law(t, state):
 
     # If only one state is passed in, get the voltages
     if np.size(state, 1) == 1:
-        if (t - arm.last_controller_time < arm.loop_time):
+        if (t - arm.last_controller_time < arm.loop_time): # Only update controller input once per robot loop time
             return arm.last_u
         if useLQR:
-            PD_matrix = arm.get_K(state)
+            PD_matrix = arm.get_K(state) # If doing LQR, get the optimal K matrix
         
-        target_state = traj.sample(t)[:4,:]
-        err = target_state - state
-        u = arm.feed_forward(target_state) + PD_matrix*err
-        print("t: %0.04f\tu = %0.02f, %0.02f" % (t, u[0], u[1]))
+        target_state = traj.sample(t)[:4,:] # Sample the trajectory at this time to get the target state
+        err = target_state - state          # Calculate the state error
+        u = arm.feed_forward(target_state) + PD_matrix*err  # Provide input u = u_ff + K(r-x)
     else:
         # If multiple states are passed in as a matrix, with each column representing a state, return
         # the voltages for each of those states. This is used for figuring out the voltage at each

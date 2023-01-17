@@ -56,8 +56,10 @@ class TwoJointArm(object):
 
         pos_tol = .1
         vel_tol = .3
-        self.Q = np.matrix(np.diag([1/pos_tol/pos_tol, 1/pos_tol/pos_tol, 1/vel_tol/vel_tol, 1/vel_tol/vel_tol]))
 
+        # Bryson's rule - set Q[i,i] = 1/err_x_max[i]^2, where err_x_max[i] is the max acceptable error for x[i]
+        #                 set R[i,i] = 1/12^2 for 12V
+        self.Q = np.matrix(np.diag([1/pos_tol/pos_tol, 1/pos_tol/pos_tol, 1/vel_tol/vel_tol, 1/vel_tol/vel_tol]))
         self.R = np.matrix(np.diag([1/12.0/12.0, 1/12.0/12.0]))
 
         self.last_controller_time = -10
