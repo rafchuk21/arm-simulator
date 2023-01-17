@@ -13,6 +13,7 @@ t0 = 0
 tf = 10
 
 def get_arm_joints(state):
+    """Get the xy positions of all three robot joints (?) - base joint (at 0,0), elbow, end effector"""
     (joint_pos, eff_pos) = arm.get_lin_joint_pos(state[:2])
     x = np.array([0, joint_pos[0,0], eff_pos[0,0]])
     y = np.array([0, joint_pos[1,0], eff_pos[1,0]])
@@ -21,28 +22,61 @@ def get_arm_joints(state):
 pos_row = lambda t: np.matrix([1, t, t*t, t*t*t])
 vel_row = lambda t: np.matrix([0, 1, 2*t, 3*t*t])
 
-# state0 - initial state (theta1, theta2, omega1, omega2)
-# statef - final state (theta1, theta2, omega1, omega2)
-def cubic_interpolation(t0, tf, state0, statef):
+def cubic_interpolation(t0, tf, state0: np.matrix, statef: np.matrix) -> np.matrix:
+    """Perform cubic interpolation between state0 at t = t0 and statef at t = tf.
+    Solves using the matrix equation:
+     -                    -   -        -       -        -
+    | 1    t0   t0^2  t0^3 | | c01  c02 |     | x01  x02 |
+    | 0    1   2t0   3t0^2 | | c11  c12 |  =  | v01  v02 |
+    | 1    tf   tf^2  tf^3 | | c21  c22 |     | xf1  xf2 |
+    | 0    1   2tf   3tf^2 | | c31  c32 |     | vf1  vf2 |
+     -                    -   -        -       -        -
+    
+    To find the cubic polynomials:
+    x1(t) = c01 + c11t + c21t^2 + c31t^3
+    x2(t) = c02 + c12t + c22t^2 + c32t^3
+    where x1 is the first joint position and x2 is the second joint position, such that
+    the arm is in state0 [x01, x02, v01, v02].T at t0 and statef [xf1, xf2, vf1, vf2].T at tf.
+
+    Make sure to only use the interpolated cubic for t between t0 and tf.
+
+    Arguments:
+        t0 - start time of interpolation
+        tf - end time of interpolation
+        state0 - start state [theta1, theta2, omega1, omega2].T
+        statef - end state [theta1, theta2, omega1, omega2].T
+    
+    Returns:
+        coeffs - 4x2 matrix containing the interpolation coefficients for joint 1 in
+                 column 1 and joint 2 in column 2
+    """
+
+    # right hand side matrix
     rhs = np.concatenate((state0.reshape((2,2)), statef.reshape(2,2)))
+    # left hand side matrix
     lhs = np.concatenate((pos_row(t0), vel_row(t0), pos_row(tf), vel_row(tf)))
 
     coeffs = lhs.I*rhs
     return coeffs
 
+# Start at (x,y) = (1, -.2) at rest
 start_state = np.concatenate((arm.inv_kinematics(np.matrix([1, -.2]).T, True), np.matrix([0,0]).T))
+# Then go to (x,y) = (-1.8, 1) at rest
 middle_state = np.concatenate((arm.inv_kinematics(np.matrix([-1.8, 1]).T), np.matrix([0,0]).T))
+# Then go to (x,y) = (1.5, 1) at rest
 end_state = np.concatenate((arm.inv_kinematics(np.matrix([1.5, 1]).T, True), np.matrix([0,0]).T))
 
-t0 = 0
-t1 = 3
-t2 = 4
-t3 = 8
+t0 = 0 # start time
+t1 = 3 # time to arrive at middle_state
+t2 = 4 # time to leave middle_state
+t3 = 8 # time to arrive at end_state
 
+# Generate the trajectory segments from the cubic interpolation
 traj1 = Trajectory.from_coeffs(cubic_interpolation(t0, t1, start_state, middle_state), t0, t1)
 traj2 = Trajectory.from_coeffs(cubic_interpolation(t1, t2, middle_state, middle_state), t1, t2)
 traj3 = Trajectory.from_coeffs(cubic_interpolation(t2, t3, middle_state, end_state), t2, t3)
 
+# Combine the three trajectory segments
 traj = traj1.append(traj2).append(traj3)
 
 #traj = Trajectory.from_coeffs(cubic_interpolation(0, 5, np.matrix([0, 0, 0, 0]).T, np.matrix([np.pi/2, -np.pi/2, 0, 0]).T), 0, 5)
