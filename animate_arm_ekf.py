@@ -157,15 +157,15 @@ arm.control_law = control_law
 
 print("Starting sim...")
 s = time.perf_counter()
-sim_results = arm.simulate((t0, tf), initial_state = traj.sample(0)[:4,:].A1, t_eval = np.arange(t0, tf, dt))
+sim_results = arm.simulate_with_ekf(traj, (t0, tf), initial_state = traj.sample(0)[:4])
 e = time.perf_counter()
 print("Finished sim")
 print("Elapsed: %.02f us" % ((e-s)*10**6))
 time_vec = sim_results.t
 arm.last_controller_time = -10
 arm.last_u = np.matrix([0,0]).T
-voltage_log = arm.get_voltage_log(sim_results)
-current_log = arm.get_current_log(sim_results, voltage_log)
+voltage_log = sim_results.U
+current_log = np.matrix(np.zeros_like(voltage_log))#arm.get_current_log(sim_results, voltage_log)
 
 ax_v.set_ylim((np.min(voltage_log), np.max(voltage_log)))
 ax_c.set_ylim((np.min(current_log), np.max(current_log)))
@@ -174,7 +174,7 @@ ax_v.legend([v_line1, v_line2], ["Joint 1 Voltage", "Joint 2 Voltage"], loc='low
 ax_c.legend([c_line1, c_line2], ["Joint 1 Current", "Joint 2 Current"], loc='lower center', bbox_to_anchor = (0.5, -1))
 
 def init():
-    (xs, ys) = get_arm_joints(sim_results.y[:,0])
+    (xs, ys) = get_arm_joints(sim_results.X[:,0])
     arm_line.set_data(xs, ys)
     target_line.set_data(xs, ys)
     ax.set_xlim(-arm.l1-arm.l2, arm.l1+arm.l2)
@@ -187,7 +187,7 @@ def init():
     return arm_line, target_line, v_line1, v_line2, c_line1, c_line2, state_line,
 
 def animate(i):
-    (xs, ys) = get_arm_joints(sim_results.y[:4,i])
+    (xs, ys) = get_arm_joints(sim_results.X[:4,i])
     arm_line.set_data(xs, ys)
     (xs, ys) = get_arm_joints(traj.sample(sim_results.t[i])[:4,:])
     target_line.set_data(xs, ys)
@@ -200,13 +200,13 @@ def animate(i):
     c_line1.set_data(time_vec[:i], current_log[0,:i])
     c_line2.set_data(time_vec[:i], current_log[1,:i])
 
-    theta1 = sim_results.y[0, :(i+1)]
-    theta2 = sim_results.y[1, :(i+1)]
+    theta1 = sim_results.X[0, :(i+1)]
+    theta2 = sim_results.X[1, :(i+1)]
     state_line.set_data(theta1, theta2)
 
     return arm_line, target_line, v_line1, v_line2, c_line1, c_line2, state_line,
 
-nframes = len(sim_results.y.T)
+nframes = len(sim_results.t)
 anim = animation.FuncAnimation(fig, animate, init_func = init, frames = nframes, interval = int(dt*1000), blit=False, repeat=False)
 
 

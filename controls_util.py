@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.linalg import solve_discrete_are
+from scipy.linalg import solve_discrete_are, expm
 import time
 
 def linearize(f, x: np.matrix, u: np.matrix, eps = 1e-4) -> tuple[np.matrix, np.matrix]:
@@ -19,6 +19,13 @@ def linearize(f, x: np.matrix, u: np.matrix, eps = 1e-4) -> tuple[np.matrix, np.
     jac_u = jacobian_with_u(f, x, u, eps)
 
     return (jac_x, jac_u)
+
+def discretize_ab(A, B, dt):
+    states = A.shape[0]
+    inputs = B.shape[1]
+
+    M = np.matrix(expm(np.block([[A, B], [np.zeros((inputs, states)), np.zeros((inputs, inputs))]]) * dt))
+    return M[:states, :states], M[:states, states:]
 
 def jacobian_with_x(f, x: np.matrix, u: np.matrix, eps = 1e-4) -> np.matrix:
     """Get the jacobian of f with respect to x evaluated at x, u"""

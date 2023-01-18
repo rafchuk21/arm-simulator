@@ -1,7 +1,9 @@
 import numpy as np
 from scipy.integrate import solve_ivp
 import controls_util as controls
+from Trajectory import Trajectory
 import time
+from sklearn.utils import Bunch
 
 class TwoJointArm(object):
     def __init__(self):
@@ -62,6 +64,10 @@ class TwoJointArm(object):
         #                 set R[i,i] = 1/12^2 for 12V
         self.Q = np.matrix(np.diag([1/pos_tol/pos_tol, 1/pos_tol/pos_tol, 1/vel_tol/vel_tol, 1/vel_tol/vel_tol]))
         self.R = np.matrix(np.diag([1/12.0/12.0, 1/12.0/12.0]))
+
+        self.Q_covariance = np.matrix(np.diag([.001**2, .001**2, .001**2, .001**2, 1.0**2, 1.0**2]))
+        self.R_covariance = np.matrix(np.diag([.01**2, .01**2, .01**2, .01**2]))
+        self.C = np.matrix(np.block([np.identity(4), np.zeros((4,2))]))
 
         self.last_controller_time = -10
         self.loop_time = 1/50.0
@@ -166,36 +172,20 @@ class TwoJointArm(object):
         c = f(x + dt/2.0 * b)
         d = f(x + dt*c)
         return x + dt * (a + 2.0 * b + 2.0 * c + d) / 6.0
-
-    def dynamics_torque(self, state, torques):
-        """Uses the given state and applied torques to find the derivative of the state."""
-        (M, C, G) = self.dynamics_matrices(state)
-        omega_vec = state[2:4]
-        alpha_vec = M.I*(torques - C*omega_vec - G)
-        return np.concatenate((omega_vec, alpha_vec))
-
-    def step_torque(self, torques, dt):
-        """Time step the arm with a set of given torques."""
-        self.state = self.RK4(lambda s: self.dynamics_torque(s, torques), self.state, dt)
-        return self.state
     
-    def feed_forward_torques(self, state, accels = np.matrix([0,0]).T):
-        (M, C, G) = self.dynamics_matrices(state)
-        torques = M*accels + C*state[2:4] + G
-        return torques
-    
-    def dynamics(self, state, u):
-        """Finds the derivative of the state given an initial state and voltage input.
-        M*alpha + C*omega + G = torque = K3*u - K4*omega
+    def dynamics(self, X: np.matrix, U: np.matrix):
+        """ Finds the derivative of the true state X with respect to time.
+        Ideal model: M*alpha + C*omega + G = torque = K3*U - K4*omega
+        Can add unmodelled distrubances.
         """
-        omega_vec = state[2:4]
-        (M, C, G) = self.dynamics_matrices(state)
-        basic_torque = self.K3*u
+        omega_vec = X[2:4]
+        (M, C, G) = self.dynamics_matrices(X)
+        basic_torque = self.K3*U
         back_emf_loss = self.K4*omega_vec
         disturbance_torque = np.matrix([0,0]).T
 
         # Try different disturbances:
-        #basic_torque = basic_torque * .5
+        basic_torque = basic_torque * .5
         #disturbance_torque = np.matrix([30, -20]).T
         #M = M * 1.5
         #G = G * 2
@@ -203,23 +193,27 @@ class TwoJointArm(object):
         torque = basic_torque - back_emf_loss + disturbance_torque
         alpha_vec = M.I*(torque - C*omega_vec - G)
         return np.matrix(np.concatenate((omega_vec, alpha_vec)))
+    
+    def simulated_dynamics(self, Xhat: np.matrix, U: np.matrix):
+        omega_vec = Xhat[2:4]
+        (M, C, G) = self.dynamics_matrices(Xhat)
+        basic_torque = self.K3*U
+        back_emf_loss = self.K4*omega_vec
+        torque = basic_torque - back_emf_loss
+        alpha_vec = M.I*(torque - C*omega_vec - G)
+        dXhat = np.matrix(np.zeros_like(Xhat))
+        dXhat[:4] = np.concatenate((omega_vec, alpha_vec))
+        return dXhat
 
-    def unbounded_step(self, state, u, dt = .005):
-        """Step the arm forward with a given input. Updates the internal state.
-        Much slower than using simulate().
-        """
+    def step_RK4(self, state, u, dt = .02):
         return self.RK4(lambda s: self.dynamics(s, u), state, dt)
 
-    def step(self, u, dt):
-        """Step the arm forward with a given input. Bounds the input if necessary.
-        Updates the internal state. Much slower than using simulate().
-        """
-        u = np.clip(u, -12, 12)
-        self.state = self.unbounded_step(self.state, u, dt)
-        self.voltage_log = np.concatenate((self.voltage_log, u.T))
-        current = self.stall_current * (u - np.multiply(self.state[2:4], np.matrix([self.G1, self.G2]).T)/self.Kv) / 12.0
-        self.current_log = np.concatenate((self.current_log, current.T))
-        return self.state
+    def step_ivp(self, state, u, dt = .02):
+        step_res = solve_ivp(lambda t, s, u: self.dynamics(np.matrix(s).T, u).A1, (0, dt), state[:4], args = (u,))
+        return np.matrix(step_res.y[:,-1])
+
+    def simulated_step(self, Xhat, U, dt = .02):
+        return self.RK4(lambda s: self.simulated_dynamics(s, U), Xhat, dt)
     
     def feed_forward(self, state, alpha = np.matrix([0,0]).T):
         """Determine the feed forward to satisfy given state and accelerations."""
@@ -244,6 +238,109 @@ class TwoJointArm(object):
             initial_state = self.state.A1
         return solve_ivp(self.get_dstate, t_span, initial_state, t_eval = t_eval, max_step = self.loop_time)
     
+    def simulate_with_ekf(self, trajectory: Trajectory, t_span, initial_state: np.matrix = None, dt = .02):
+        """ Simulate the arm including input error estimation. This is an alternative to using an 
+        integral term to account from real-world deviations from the model, since the integral term
+        is generally suboptimal.
+
+        The input error is estimated using a Kalman filter. While we're at it, this also simulates
+        sensor reading noise implemented in the sample_encoder() method.
+
+        This class has some similar methods, which might get confusing.
+            dynamics() - simulates the real-world dynamic response of the system.
+            simulated_dynamics() - simulates what the controller "thinks" the dynamic response is.
+                Note: differences between these two are what the input error estimation is supposed
+                to correct for.
+            step_RK4() - calculates the next step using the real-world dynamics using RK4 integration.
+            step_ivp() - calculates the next step using the real-world dynamics using solve_ivp().
+            simulated_step() - calculates what the controller thinks the next step would be using its
+                internal model of the system. This uses RK4 since that's what the roborio would do.
+        
+        In this method there are three variables representing the state:
+            X: The real-world state [pos1, pos2, vel1, vel2].T. The controller should not be able
+                to see this value directly - it is only used to simulate the real-world response.
+            Xenc: How the encoders measure the real-world state [pos1, pos2, vel1, vel2].T.
+            Xhat: The controller's estimate of its current state and input error.
+                [pos1, pos2, vel1, vel2, err1, err2].T.
+        
+        """
+        if initial_state is None:
+            initial_state = self.state
+        
+        (t0, tf) = t_span
+        t_vec = np.arange(t0, tf + dt, dt)
+        npts = len(t_vec)
+
+        X = initial_state.copy()
+        Xhat = np.concatenate((initial_state.copy(), np.matrix([0,0]).T))
+
+        P = self.Q_covariance.copy()
+
+        # initialize matrices to store simulation results.
+        X_list = np.matrix(np.zeros((4, 1)))
+        Xenc_list = np.matrix(np.zeros((4, 1)))
+        Xhat_list = np.matrix(np.zeros((6, 1)))
+        U_list = np.matrix(np.zeros((2,1)))
+
+        for t in t_vec:
+            """
+            This first part is like normal: the controller uses its estimate of the
+            system state to compute the voltage to apply.
+            """
+            (A, B) = self.linearize(Xhat[:4])
+            K = self.get_K(A = A, B = B)
+
+            r = trajectory.sample(t)[:4]
+            U_ff = self.feed_forward(r)
+            U_err = Xhat[4:]
+            print(U_err.T)
+            U = U_ff + K*(r - Xhat[:4]) - U_err
+
+            U = np.clip(U, -12, 12)
+
+            A = np.block([[A, B], [np.zeros((2, 6))]])
+            B = np.block([[B], [np.zeros((2,2))]])
+
+            """
+            EKF PREDICTION STEP
+            Here, the Extended Kalman Filter predicts what it thinks is going to happen
+            """
+            Xhat_prior = self.simulated_step(Xhat, U, dt = dt)
+            P_prior = A*P*A.T + self.Q_covariance
+
+            """
+            UPDATE TRUE STEP
+            Here, the simulation updates the real-world state of the system, as well as
+            the encoder measurement trying to capture it.
+            """
+            X = np.matrix(self.step_ivp(Xhat.A1, U, dt = dt)).T
+            Xenc = self.sample_encoder(X)
+
+            """
+            EKF UPDATE STEP
+            Here, the Extended Kalman Filter looks at its prediction it made before and
+            checks how wrong it was, according to the encoder reading. It then updates
+            its estimate of the state and input error accordingly.
+            """
+            Kal = P_prior*self.C.T*(np.linalg.inv(self.C*P_prior*self.C.T + self.R_covariance))
+            print(Kal)
+            #print(Xenc - Xhat_prior[:4])
+            Xhat_post = Xhat_prior + Kal*(Xenc - Xhat_prior[:4])
+            P_post = (np.identity(6) - Kal*self.C)*P_prior
+
+            # Now the hard part is done - prepare for next loop and store results.
+            Xhat = Xhat_post.copy()
+            P = P_post.copy()
+
+            X_list = np.concatenate((X_list, X), 1)
+            Xenc_list = np.concatenate((Xenc_list, Xenc), 1)
+            Xhat_list = np.concatenate((Xhat_list, Xhat), 1)
+            U_list = np.concatenate((U_list, U), 1)
+
+        # Return the results of the simulation as a Bunch
+        return Bunch(t = t_vec, X = X_list, Xenc = Xenc_list, \
+            Xhat = Xhat_list, U = U_list)
+    
     def get_voltage_log(self, sim_solution):
         """Reconstruct the voltage history using the simulation results."""
         return self.control_law(sim_solution.t, sim_solution.y)
@@ -266,34 +363,101 @@ class TwoJointArm(object):
             voltage_log = self.get_voltage_log(sim_solution)
         return self.get_current(voltage_log, sim_solution.y)
     
-    def linearize(self, state = None, eps = 1e-4, dt = .005):
+    def linearize(self, state = None, eps = 1e-4, dt = .02):
         """Get the arm model linearized at a stationary point at the current state.
         Generates the stationary point voltage using feed_forward() function.
         
         Arguments:
             state: state to linearize around. (Default: arm current state)
             eps: amount to +/- to x, u when taking the jacobian (Default: 1e-4)
-            dt: time step for RK4 integration to estimate state-dot when taking the jacobian (Default: 0.005)
+            dt: Controller loop time for discretization (Default: .02)
         """
         if state is None:
             state = self.state
         
-        f = lambda x, u: self.unbounded_step(x, u, dt)
+        f = lambda x, u: self.simulated_dynamics(x, u)
 
-        (A,B) = controls.linearize(f, x = state, u = self.feed_forward(state), eps = eps)
+        # Continuous estimates for A, B using the numerical Jacobian
+        (Ac,Bc) = controls.linearize(f, x = state, u = self.feed_forward(state), eps = eps)
+        # Discretize the continuous estimates based on the controller loop time
+        (A, B) = controls.discretize_ab(Ac, Bc, dt)
+
+        # Old method for linearizing the system. This doesn't work when the controller time doesn't match the simulation time,
+        #   or when the controller doesn't update its output every simulation loop.
+        #(A2, B2) = controls.linearize(lambda x, u: self.simulated_step(x, u, dt), x = state, u = self.feed_forward(state), eps=eps)
+
+        """
+        # used to compare the new Exponential linearization method and the old RK4 linearization method.
+        print("Exp: ")
+        print(np.concatenate((A, B), 1))
+        print("RK4: ")
+        print(np.concatenate((A2, B2), 1))
+        """
+
         return (A,B)
 
     
-    def get_K(self, state = None):
+    def get_K(self, state = None, A = None, B = None):
         """ Get the optimal K matrix using LQR to minimize the cost per Q, R matrices.
             u = K(r-x) + u_ff
         
         Argument:
             state: State to find optimal K matrix for. (Default: arm current state)
         """
-        if state is None:
-            state = self.state
-
-        (A,B) = self.linearize(state)
+        if A is None or B is None:
+            if state is None:
+                state = self.state
+            (A,B) = self.linearize(state)
+        
         K = controls.lqr(A, B, self.Q, self.R)
         return K
+
+    def sample_encoder(self, X):
+        return X.copy()
+    
+
+"""
+EKF Input error estimate outline:
+
+X = true state [pos1, pos2, vel1, vel2].T
+Xhat = estimated state EKF [pos1, pos2, vel1, vel2, Uerr1, Uerr2].T
+Xenc = measured state [pos1, pos2, vel1, vel2, Uerr1, Uerr2].T
+        This one is for encoder noise etc
+
+U = Applied voltage [u1, u2].T
+Uerr = Estimate of error in U [u1, u2].T
+
+r = goal state [pos1, pos2, vel1, vel2].T
+K = gains matrix (2x4 matrix)
+
+Kal, P, Q, R - kalman matrices (6x6 matrices)
+
+A, B: dX = A*X + B*U
+C, D: output matrices. C = identity, D = 0
+
+Each loop:
+    A, B = linearize(Xhat)
+    K = LQR(A, B, Xhat)
+    Uerr = Xhat[4:5]
+    U = U_ff(r) + K(r-Xhat[0:3]) - Uerr
+
+    Prediction step:
+    dXhat_prior = [A, B; 0, 0]*Xhat + [B; 0]*U
+    P_prior = A*P*A.T + Q
+
+    Update simulation:
+    dX = A*X + B*U
+
+    Xhat_prior = Xhat + RK4(dXhat_prior)
+    X = X + RK4(dX)
+    Xenc = [sample_encoder(X); [0;0]]                                           (identity C omitted from here)
+
+    Update Step:
+    Kal = P_prior*(P_prior + R).I                                               (identity C omitted from here)
+    Xhat_post = Xhat_prior + Kal*(Xenc - Xhat_prior)                            (identity C, zero D*U omitted from here)
+    P_post = (Identity(6) - Kal)*P_prior
+
+    Xhat = Xhat_post
+    P = P_post
+
+"""
