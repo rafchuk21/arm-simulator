@@ -67,11 +67,11 @@ class TwoJointArm(object):
 
         # Bryson's rule - set Q[i,i] = 1/err_x_max[i]^2, where err_x_max[i] is the max acceptable error for x[i]
         #                 set R[i,i] = 1/12^2 for 12V
-        self.Q = 1e10*np.matrix(np.diag([1/pos_tol/pos_tol, 1/pos_tol/pos_tol, 1/vel_tol/vel_tol, 1/vel_tol/vel_tol]))
-        self.R = 1e-2*np.matrix(np.diag([1/12.0/12.0, 1/12.0/12.0]))
+        self.Q = np.matrix(np.diag([1/pos_tol/pos_tol, 1/pos_tol/pos_tol, 1/vel_tol/vel_tol, 1/vel_tol/vel_tol]))
+        self.R = np.matrix(np.diag([1/12.0/12.0, 1/12.0/12.0]))
 
-        self.Q_covariance = np.matrix(np.diag([.01**2, .01**2, .01**2, .01**2, 10.0**2, 10.0**2]))
-        self.R_covariance = np.matrix(np.diag([.01**2, .01**2, .01**2, .01**2]))
+        self.Q_covariance = 1e0*np.matrix(np.diag([.1**2, .1**2, .1**2, .1**2, 10.0**2, 10.0**2]))
+        self.R_covariance = 1e0*np.matrix(np.diag([.001**2, .001**2, .001**2, .001**2]))
         self.C = np.matrix(np.block([np.identity(4), np.zeros((4,2))]))
 
         self.last_controller_time = -10
@@ -206,9 +206,16 @@ class TwoJointArm(object):
         omega_vec = Xhat[2:4]
         (M, C, G) = self.dynamics_matrices(Xhat[:4])
 
+        """
         if len(Xhat) == 6:
             U += self.K3*Xhat[4:]
+        """
+        
         basic_torque = self.K3*U
+
+        if len(Xhat) == 6:
+            basic_torque += Xhat[4:]
+
         back_emf_loss = self.K4*omega_vec
         torque = basic_torque - back_emf_loss
         alpha_vec = M.I*(torque - C*omega_vec - G)
@@ -292,7 +299,7 @@ class TwoJointArm(object):
         f = self.simulated_dynamics
         ff = self.feed_forward
 
-        #f = lambda x, u: np.matrix([0.0,0.0,0.0,0.0]).T#self.simulated_dynamics
+        #f = lambda x, u: pad_to_shape(np.matrix([0.0, 0.0, x[2,0], x[3,0]]).T, x.shape)#self.simulated_dynamics
         #ff = lambda x: np.matrix([0.0,0.0]).T#self.feed_forward
         KF = controls.KalmanFilter(f, ff, Xhat, self.Q_covariance[:4,:4], self.R_covariance, self.C[:,:4])
 
@@ -357,11 +364,11 @@ class TwoJointArm(object):
             (A, B) = self.linearize(pad_to_shape(KF.get(), (6,1)))
             Acond = np.linalg.cond(A)
             
-            if Acond >= 8000 and not downsized:
+            if False and np.abs(Xhat[1]) <= .01 and not downsized:
                 print("%0.02f: downsizing" % (t))
                 KF = KF.downsize(4)
                 downsized = True
-            elif Acond <= 6000 and downsized and not ignore_err:
+            elif np.abs(Xhat[1]) >= .03 and downsized and not ignore_err:
                 print("%0.02f: upsizing" % (t))
                 KF = KF.upsize(np.concatenate((KF.get(), np.matrix([0,0]).T)), self.Q_covariance)
                 downsized = False
@@ -383,7 +390,7 @@ class TwoJointArm(object):
             else:
                 U_err = KF.get()[4:]
             Xerr = r - KF.get()[:4]
-            U = U_ff + K*(Xerr) - U_err
+            U = U_ff + K*(Xerr) - self.K3.I*U_err
             U = np.clip(U, -12, 12)
 
             #A = np.block([[A, B], [np.zeros((2, 4)), np.zeros((2,2))]])
