@@ -85,7 +85,8 @@ traj = traj1.append(traj2).append(traj3)
 
 (xs, ys) = get_arm_joints(arm.state)
 fig = plt.figure()
-ax = fig.add_subplot(4,4,(1,14))
+fig.set_size_inches(12,5)
+ax = fig.add_subplot(4,5,(1,18))
 ax.axis('square')
 ax.grid(True)
 ax.set_xlim(-arm.l1-arm.l2, arm.l1+arm.l2)
@@ -101,16 +102,24 @@ ax2.set_ylim(-np.pi, np.pi)
 state_line, = ax2.plot([], [])
 
 
-ax_v = fig.add_subplot(4,4,4)
-ax_c = fig.add_subplot(4,4,12)
-ax_v.set_xlim((t0, tf))
-ax_c.set_xlim((t0, tf))
-ax_v.grid(True)
-ax_c.grid(True)
-ax_v.yaxis.set_label("Voltage (V)")
-ax_c.yaxis.set_label("Input Error (V)")
-v_line1, v_line2 = ax_v.plot([], [], 'r', [], [], 'b')
-c_line1, c_line2 = ax_c.plot([], [], 'r', [], [], 'b')
+ax_1 = fig.add_subplot(4,5,4)
+ax_2 = fig.add_subplot(4,5,5)
+ax_3 = fig.add_subplot(4,5,14)
+ax_4 = fig.add_subplot(4,5,15)
+ax_1.set_xlim((t0, tf))
+ax_2.set_xlim((t0, tf))
+ax_3.set_xlim((t0, tf))
+ax_4.set_xlim((t0, tf))
+ax_1.grid(True)
+ax_2.grid(True)
+ax_3.grid(True)
+ax_4.grid(True)
+ax_1.yaxis.set_label("Voltage (V)")
+ax_3.yaxis.set_label("Input Error (V)")
+ax1_line1, ax1_line2 = ax_1.plot([], [], 'r', [], [], 'b')
+ax2_line1, ax2_line2, ax2_line3 = ax_2.plot([], [], 'r', [], [], 'b', [], [], 'g')
+ax3_line1, ax3_line2 = ax_3.plot([], [], 'r', [], [], 'b')
+ax4_line1, ax4_line2, ax4_line3 = ax_4.plot([], [], 'r', [], [], 'b', [], [], 'g')
 
 print("Starting sim...")
 s = time.perf_counter()
@@ -123,12 +132,23 @@ arm.last_controller_time = -10
 arm.last_u = np.matrix([0,0]).T
 voltage_log = sim_results.U
 input_error_log = sim_results.U_err#arm.get_current_log(sim_results, voltage_log)
+true_pos = sim_results.X[:2,:]
+enc_pos = sim_results.Xenc[:2,:]
+est_pos = sim_results.Xhat[:2,:]
+target_pos = sim_results.target[:2,:]
+pos_err = sim_results.Xerr[:2,:]
+Kcond = sim_results.Kcond
+Acond = sim_results.Acond
 
-ax_v.set_ylim((np.min(voltage_log), np.max(voltage_log)))
-ax_c.set_ylim((np.min(input_error_log), np.max(input_error_log)))
+ax_1.set_ylim((np.min(voltage_log), np.max(voltage_log)))
+ax_2.set_ylim((np.min(est_pos-target_pos), np.max(est_pos-target_pos)))
+ax_3.set_ylim((np.min(input_error_log), np.max(input_error_log)))
+ax_4.set_ylim((np.min(est_pos-target_pos), np.max(est_pos-target_pos)))
 
-ax_v.legend([v_line1, v_line2], ["Joint 1 Voltage", "Joint 2 Voltage"], loc='lower center', bbox_to_anchor = (0.5, -1))
-ax_c.legend([c_line1, c_line2], ["Input 1 Error", "Input 2 Error"], loc='lower center', bbox_to_anchor = (0.5, -1))
+ax_1.legend([ax1_line1, ax2_line2], ["J1 Voltage", "J2 Voltage"], loc='lower center', bbox_to_anchor = (0.5, -1))
+ax_2.legend([ax2_line1, ax2_line2, ax2_line3], ["Encoder Err", "Est. Err", "True Err"], loc='lower center', bbox_to_anchor = (0.5, -1))
+ax_3.legend([ax3_line1, ax3_line2], ["Input 1 Error", "Input 2 Error"], loc='lower center', bbox_to_anchor = (0.5, -1))
+ax_4.legend([ax4_line1, ax4_line2, ax4_line3], ["Encoder Err", "Est. Err", "True Err"], loc='lower center', bbox_to_anchor = (0.5, -1))
 
 def init():
     (xs, ys) = get_arm_joints(sim_results.X[:,0])
@@ -137,12 +157,18 @@ def init():
     hat_line.set_data(xs, ys)
     ax.set_xlim(-arm.l1-arm.l2, arm.l1+arm.l2)
     ax.set_ylim(-arm.l1-arm.l2, arm.l1+arm.l2)
-    v_line1.set_data([], [])
-    v_line2.set_data([], [])
-    c_line1.set_data([], [])
-    c_line2.set_data([], [])
+    ax1_line1.set_data([], [])
+    ax1_line2.set_data([], [])
+    ax2_line1.set_data([], [])
+    ax2_line2.set_data([], [])
+    ax2_line3.set_data([], [])
+    ax3_line1.set_data([], [])
+    ax3_line2.set_data([], [])
+    ax4_line1.set_data([], [])
+    ax4_line2.set_data([], [])
+    ax4_line3.set_data([], [])
     state_line.set_data([], [])
-    return arm_line, target_line, hat_line, v_line1, v_line2, c_line1, c_line2, state_line,
+    return arm_line, target_line, hat_line, ax1_line1, ax1_line2, ax2_line1, ax2_line2, ax2_line3, ax3_line1, ax3_line2, ax4_line1, ax4_line2, ax4_line3, state_line,
 
 def animate(i):
     (xs, ys) = get_arm_joints(sim_results.X[:4,i])
@@ -154,21 +180,29 @@ def animate(i):
     ax.set_xlim(-arm.l1-arm.l2, arm.l1+arm.l2)
     ax.set_ylim(-arm.l1-arm.l2, arm.l1+arm.l2)
 
-    v_line1.set_data(time_vec[:i], voltage_log[0,:i])
-    v_line2.set_data(time_vec[:i], voltage_log[1,:i])
+    ax1_line1.set_data(time_vec[:i], voltage_log[0,:i])
+    ax1_line2.set_data(time_vec[:i], voltage_log[1,:i])
 
-    c_line1.set_data(time_vec[:i], input_error_log[0,:i])
-    c_line2.set_data(time_vec[:i], input_error_log[1,:i])
+    ax2_line1.set_data(time_vec[:i], enc_pos[0,:i] - target_pos[0,:i])
+    ax2_line2.set_data(time_vec[:i], est_pos[0,:i] - target_pos[0,:i])
+    ax2_line3.set_data(time_vec[:i], true_pos[0,:i] - target_pos[0,:i])
+
+    ax3_line1.set_data(time_vec[:i], input_error_log[0,:i])
+    ax3_line2.set_data(time_vec[:i], input_error_log[1,:i])
+
+    ax4_line1.set_data(time_vec[:i], enc_pos[1,:i] - target_pos[1,:i])
+    ax4_line2.set_data(time_vec[:i], est_pos[1,:i] - target_pos[1,:i])
+    ax4_line3.set_data(time_vec[:i], true_pos[1,:i] - target_pos[1,:i])
 
     theta1 = sim_results.X[0, :(i+1)]
     theta2 = sim_results.X[1, :(i+1)]
     state_line.set_data(theta1, theta2)
 
-    return arm_line, target_line, hat_line, v_line1, v_line2, c_line1, c_line2, state_line,
+    return arm_line, target_line, hat_line, ax1_line1, ax1_line2, ax2_line1, ax2_line2, ax2_line3, ax3_line1, ax3_line2, ax4_line1, ax4_line2, ax4_line3, state_line,
 
 nframes = len(sim_results.t)
 anim = animation.FuncAnimation(fig, animate, init_func = init, frames = nframes, interval = int(dt*1000), blit=False, repeat=True)
 
 
 plt.show()                                     # Uncomment this to show plot in window
-#anim.save('sim_ekf_no_est.gif', writer='imagemagick')     # Uncomment this to save plot as gif
+#anim.save('sim_ekf_no_resizing.gif', writer='imagemagick')     # Uncomment this to save plot as gif

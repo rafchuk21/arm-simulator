@@ -5,6 +5,11 @@ from Trajectory import Trajectory
 import time
 from sklearn.utils import Bunch
 
+def pad_to_shape(x, shape):
+    r = np.matrix(np.zeros(shape))
+    r[:x.shape[0], :x.shape[1]] = x
+    return r
+
 class TwoJointArm(object):
     def __init__(self):
         self.state = np.asmatrix(np.zeros(4)).T
@@ -62,12 +67,12 @@ class TwoJointArm(object):
 
         # Bryson's rule - set Q[i,i] = 1/err_x_max[i]^2, where err_x_max[i] is the max acceptable error for x[i]
         #                 set R[i,i] = 1/12^2 for 12V
-        self.Q = np.matrix(np.diag([1/pos_tol/pos_tol, 1/pos_tol/pos_tol, 1/vel_tol/vel_tol, 1/vel_tol/vel_tol]))
-        self.R = np.matrix(np.diag([1/12.0/12.0, 1/12.0/12.0]))
+        self.Q = 1e10*np.matrix(np.diag([1/pos_tol/pos_tol, 1/pos_tol/pos_tol, 1/vel_tol/vel_tol, 1/vel_tol/vel_tol]))
+        self.R = 1e-2*np.matrix(np.diag([1/12.0/12.0, 1/12.0/12.0]))
 
-        self.Q_covariance = np.matrix(np.diag([.001**2, .001**2, .001**2, .001**2, 10.0**2, 10.0**2]))
-        self.R_covariance = np.matrix(np.diag([.01**2, .01**2]))#, .01**2, .01**2]))
-        self.C = np.matrix(np.block([np.identity(2), np.zeros((2,4))]))
+        self.Q_covariance = np.matrix(np.diag([.01**2, .01**2, .01**2, .01**2, 10.0**2, 10.0**2]))
+        self.R_covariance = np.matrix(np.diag([.01**2, .01**2, .01**2, .01**2]))
+        self.C = np.matrix(np.block([np.identity(4), np.zeros((4,2))]))
 
         self.last_controller_time = -10
         self.loop_time = 1/50.0
@@ -186,7 +191,7 @@ class TwoJointArm(object):
 
         # Try different disturbances:
         #basic_torque = basic_torque * .5
-        #disturbance_torque = np.matrix([30, -20]).T
+        disturbance_torque = np.matrix([150, -100]).T
         #M = M * 1.5
         #G = G * 2
 
@@ -232,7 +237,8 @@ class TwoJointArm(object):
         the rate of change of the state.
         """
         state = np.matrix(state).T
-        u = self.control_law(t, state)
+        read_state = self.sample_encoder(state)
+        u = self.control_law(t, read_state)
         dstate = self.dynamics(state, u).A1
         return dstate
     
@@ -281,16 +287,21 @@ class TwoJointArm(object):
 
         X = initial_state.copy()
         Xenc = self.sample_encoder(X)
-        Xhat = np.concatenate((initial_state.copy(), np.matrix([0,0]).T))
+        Xhat = initial_state.copy()#np.concatenate((initial_state.copy(), np.matrix([0,0]).T))
 
-        P = self.Q_covariance.copy()
+        f = self.simulated_dynamics
+        ff = self.feed_forward
+
+        #f = lambda x, u: np.matrix([0.0,0.0,0.0,0.0]).T#self.simulated_dynamics
+        #ff = lambda x: np.matrix([0.0,0.0]).T#self.feed_forward
+        KF = controls.KalmanFilter(f, ff, Xhat, self.Q_covariance[:4,:4], self.R_covariance, self.C[:,:4])
 
         (A, B) = self.linearize(Xhat)
         K = self.get_K(A = A, B = B)
 
         r = trajectory.sample(t0)[:4]
         U_ff = self.feed_forward(r)
-        U = U_ff + K*(r - Xhat[:4]) - Xhat[4:]
+        U = U_ff + K*(r - Xhat[:4])# - Xhat[4:]
 
         U = np.clip(U, -12, 12)
 
@@ -302,11 +313,16 @@ class TwoJointArm(object):
         X_list = np.matrix(np.zeros((4, 1)))
         Xenc_list = np.matrix(np.zeros((4, 1)))
         Xhat_list = np.matrix(np.zeros((6, 1)))
+        Xerr_list = np.matrix(np.zeros((4, 1)))
+        target_list = np.matrix(np.zeros((4, 1)))
         U_list = np.matrix(np.zeros((2,1)))
         U_err_list = np.matrix(np.zeros((2,1)))
         current_list = np.matrix(np.zeros((2,1)))
+        Kcond_list = np.matrix(np.zeros((1,1)))
+        Acond_list = np.matrix(np.zeros((1,1)))
 
-        ignore_err = False
+        ignore_err = True
+        downsized = True
 
         for t in t_vec:
             """
@@ -323,26 +339,51 @@ class TwoJointArm(object):
             checks how wrong it was, according to the encoder reading. It then updates
             its estimate of the state and input error accordingly.
             """
-            Kal = P*self.C.T*(np.linalg.inv(self.C*P*self.C.T + self.R_covariance))
+            KF.update(Xenc)
+            
+            """Kal = P*self.C.T*(np.linalg.inv(self.C*P*self.C.T + self.R_covariance))
 
             Xhat = Xhat + Kal*(Xenc[:2] - Xhat[:2])
             if ignore_err:
                 Xhat[4:] = 0
-            P = (np.identity(6) - Kal*self.C)*P
+            P = (np.identity(6) - Kal*self.C)*P"""
 
             """
             This part is like normal: the controller uses its estimate of the
             system state to compute the voltage to apply.
             """
 
-            (A, B) = self.linearize(Xhat)
-            K = self.get_K(A = A, B = B)
+            #(A, B) = self.linearize(np.concatenate((X, np.matrix([0,0]).T)))
+            (A, B) = self.linearize(pad_to_shape(KF.get(), (6,1)))
+            Acond = np.linalg.cond(A)
+            
+            if Acond >= 8000 and not downsized:
+                print("%0.02f: downsizing" % (t))
+                KF = KF.downsize(4)
+                downsized = True
+            elif Acond <= 6000 and downsized and not ignore_err:
+                print("%0.02f: upsizing" % (t))
+                KF = KF.upsize(np.concatenate((KF.get(), np.matrix([0,0]).T)), self.Q_covariance)
+                downsized = False
+            
+            if downsized:
+                (A, B) = self.linearize(KF.get())
+                Acond = np.linalg.cond(A)
+            
+            Acond_list = np.concatenate((Acond_list, np.matrix([Acond])), 1)
+            
+
+            K = self.get_K(KF.get())
             #print(Xhat.T)
             #print("A: %0.02f\tB: %0.02f\tK: %0.02f" % (np.linalg.cond(A), np.linalg.cond(B), np.linalg.cond(K)))
             r = trajectory.sample(t)[:4]
             U_ff = self.feed_forward(r)
-            U_err = Xhat[4:]
-            U = U_ff + K*(r - Xhat[:4]) - U_err
+            if downsized:
+                U_err = np.matrix([0,0]).T
+            else:
+                U_err = KF.get()[4:]
+            Xerr = r - KF.get()[:4]
+            U = U_ff + K*(Xerr) - U_err
             U = np.clip(U, -12, 12)
 
             #A = np.block([[A, B], [np.zeros((2, 4)), np.zeros((2,2))]])
@@ -353,24 +394,32 @@ class TwoJointArm(object):
             EKF PREDICTION STEP
             Here, the Extended Kalman Filter predicts what it thinks is going to happen
             """
-            Xhat = self.simulated_step(Xhat, U, dt = dt)
+            KF.predict(U, dt)
+
+            """Xhat = self.simulated_step(Xhat, U, dt = dt)
             if ignore_err:
                 Xhat[4:] = 0
-            P = A*P*A.T + self.Q_covariance
+            P = A*P*A.T + self.Q_covariance"""
 
             current = self.get_current(U, X)
+
+            Xhat = pad_to_shape(KF.get(), (6,1))
 
             X_list = np.concatenate((X_list, X), 1)
             Xenc_list = np.concatenate((Xenc_list, Xenc), 1)
             Xhat_list = np.concatenate((Xhat_list, Xhat), 1)
+            Xerr_list = np.concatenate((Xerr_list, Xerr), 1)
             U_list = np.concatenate((U_list, U), 1)
             U_err_list = np.concatenate((U_err_list, U_err), 1)
             current_list = np.concatenate((current_list, current), 1)
+            Kcond_list = np.concatenate((Kcond_list, np.matrix([np.linalg.cond(K)])), 1)
+            target_list = np.concatenate((target_list, r), 1)
 
         # Return the results of the simulation as a Bunch
         return Bunch(t = t_vec, X = X_list, Xenc = Xenc_list, \
             Xhat = Xhat_list, U = U_list, U_err = U_err_list, \
-            current = current_list)
+            current = current_list, Xerr = Xerr_list, \
+            Kcond = Kcond_list, Acond = Acond_list, target = target_list)
     
     def get_voltage_log(self, sim_solution):
         """Reconstruct the voltage history using the simulation results."""
@@ -446,7 +495,7 @@ class TwoJointArm(object):
         return K
 
     def sample_encoder(self, X):
-        return X.copy()
+        return X.copy() + pad_to_shape(np.matrix(np.random.normal(0,.005,4)).T, X.shape)
     
 
 """

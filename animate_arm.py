@@ -128,7 +128,7 @@ def control_law(t, state):
             return arm.last_u
         if useLQR:
             PD_matrix = arm.get_K(state = state) # If doing LQR, get the optimal K matrix
-            print(np.linalg.cond(PD_matrix))
+            #print(np.linalg.cond(PD_matrix))
         
         #print(PD_matrix)
         target_state = traj.sample(t)[:4,:] # Sample the trajectory at this time to get the target state
