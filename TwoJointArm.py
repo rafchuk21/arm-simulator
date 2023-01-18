@@ -65,9 +65,9 @@ class TwoJointArm(object):
         self.Q = np.matrix(np.diag([1/pos_tol/pos_tol, 1/pos_tol/pos_tol, 1/vel_tol/vel_tol, 1/vel_tol/vel_tol]))
         self.R = np.matrix(np.diag([1/12.0/12.0, 1/12.0/12.0]))
 
-        self.Q_covariance = np.matrix(np.diag([.001**2, .001**2, .001**2, .001**2, 1.0**2, 1.0**2]))
-        self.R_covariance = np.matrix(np.diag([.01**2, .01**2, .01**2, .01**2]))
-        self.C = np.matrix(np.block([np.identity(4), np.zeros((4,2))]))
+        self.Q_covariance = np.matrix(np.diag([.001**2, .001**2, .001**2, .001**2, 10.0**2, 10.0**2]))
+        self.R_covariance = np.matrix(np.diag([.01**2, .01**2]))#, .01**2, .01**2]))
+        self.C = np.matrix(np.block([np.identity(2), np.zeros((2,4))]))
 
         self.last_controller_time = -10
         self.loop_time = 1/50.0
@@ -166,7 +166,7 @@ class TwoJointArm(object):
         return (M, C, G)
     
     def RK4(self, f, x, dt):
-        """Perform Runge-Kutta 4 integration"""
+        """Perform Runge-Kutta 4 integration""" 
         a = f(x)
         b = f(x + dt/2.0 * a)
         c = f(x + dt/2.0 * b)
@@ -185,7 +185,7 @@ class TwoJointArm(object):
         disturbance_torque = np.matrix([0,0]).T
 
         # Try different disturbances:
-        basic_torque = basic_torque * .5
+        #basic_torque = basic_torque * .5
         #disturbance_torque = np.matrix([30, -20]).T
         #M = M * 1.5
         #G = G * 2
@@ -195,8 +195,14 @@ class TwoJointArm(object):
         return np.matrix(np.concatenate((omega_vec, alpha_vec)))
     
     def simulated_dynamics(self, Xhat: np.matrix, U: np.matrix):
+        Xhat = Xhat.copy()
+        U = U.copy()
+
         omega_vec = Xhat[2:4]
-        (M, C, G) = self.dynamics_matrices(Xhat)
+        (M, C, G) = self.dynamics_matrices(Xhat[:4])
+
+        if len(Xhat) == 6:
+            U += self.K3*Xhat[4:]
         basic_torque = self.K3*U
         back_emf_loss = self.K4*omega_vec
         torque = basic_torque - back_emf_loss
@@ -236,7 +242,9 @@ class TwoJointArm(object):
         """
         if initial_state is None:
             initial_state = self.state.A1
-        return solve_ivp(self.get_dstate, t_span, initial_state, t_eval = t_eval, max_step = self.loop_time)
+
+        sim_res = solve_ivp(self.get_dstate, t_span, initial_state, t_eval = t_eval, max_step = self.loop_time)
+        return sim_res
     
     def simulate_with_ekf(self, trajectory: Trajectory, t_span, initial_state: np.matrix = None, dt = .02):
         """ Simulate the arm including input error estimation. This is an alternative to using an 
@@ -272,48 +280,41 @@ class TwoJointArm(object):
         npts = len(t_vec)
 
         X = initial_state.copy()
+        Xenc = self.sample_encoder(X)
         Xhat = np.concatenate((initial_state.copy(), np.matrix([0,0]).T))
 
         P = self.Q_covariance.copy()
+
+        (A, B) = self.linearize(Xhat)
+        K = self.get_K(A = A, B = B)
+
+        r = trajectory.sample(t0)[:4]
+        U_ff = self.feed_forward(r)
+        U = U_ff + K*(r - Xhat[:4]) - Xhat[4:]
+
+        U = np.clip(U, -12, 12)
+
+        #A = np.block([[A, B], [np.zeros((2, 4)), np.zeros((2,2))]])
+        #A = np.block([[A, B], [np.zeros((2, 4)), np.identity(2)]])
+        #B = np.block([[B], [np.zeros((2,2))]])
 
         # initialize matrices to store simulation results.
         X_list = np.matrix(np.zeros((4, 1)))
         Xenc_list = np.matrix(np.zeros((4, 1)))
         Xhat_list = np.matrix(np.zeros((6, 1)))
         U_list = np.matrix(np.zeros((2,1)))
+        U_err_list = np.matrix(np.zeros((2,1)))
+        current_list = np.matrix(np.zeros((2,1)))
+
+        ignore_err = False
 
         for t in t_vec:
-            """
-            This first part is like normal: the controller uses its estimate of the
-            system state to compute the voltage to apply.
-            """
-            (A, B) = self.linearize(Xhat[:4])
-            K = self.get_K(A = A, B = B)
-
-            r = trajectory.sample(t)[:4]
-            U_ff = self.feed_forward(r)
-            U_err = Xhat[4:]
-            print(U_err.T)
-            U = U_ff + K*(r - Xhat[:4]) - U_err
-
-            U = np.clip(U, -12, 12)
-
-            A = np.block([[A, B], [np.zeros((2, 6))]])
-            B = np.block([[B], [np.zeros((2,2))]])
-
-            """
-            EKF PREDICTION STEP
-            Here, the Extended Kalman Filter predicts what it thinks is going to happen
-            """
-            Xhat_prior = self.simulated_step(Xhat, U, dt = dt)
-            P_prior = A*P*A.T + self.Q_covariance
-
             """
             UPDATE TRUE STEP
             Here, the simulation updates the real-world state of the system, as well as
             the encoder measurement trying to capture it.
             """
-            X = np.matrix(self.step_ivp(Xhat.A1, U, dt = dt)).T
+            X = np.matrix(self.step_ivp(X.A1, U, dt = dt)).T
             Xenc = self.sample_encoder(X)
 
             """
@@ -322,24 +323,54 @@ class TwoJointArm(object):
             checks how wrong it was, according to the encoder reading. It then updates
             its estimate of the state and input error accordingly.
             """
-            Kal = P_prior*self.C.T*(np.linalg.inv(self.C*P_prior*self.C.T + self.R_covariance))
-            print(Kal)
-            #print(Xenc - Xhat_prior[:4])
-            Xhat_post = Xhat_prior + Kal*(Xenc - Xhat_prior[:4])
-            P_post = (np.identity(6) - Kal*self.C)*P_prior
+            Kal = P*self.C.T*(np.linalg.inv(self.C*P*self.C.T + self.R_covariance))
 
-            # Now the hard part is done - prepare for next loop and store results.
-            Xhat = Xhat_post.copy()
-            P = P_post.copy()
+            Xhat = Xhat + Kal*(Xenc[:2] - Xhat[:2])
+            if ignore_err:
+                Xhat[4:] = 0
+            P = (np.identity(6) - Kal*self.C)*P
+
+            """
+            This part is like normal: the controller uses its estimate of the
+            system state to compute the voltage to apply.
+            """
+
+            (A, B) = self.linearize(Xhat)
+            K = self.get_K(A = A, B = B)
+            #print(Xhat.T)
+            #print("A: %0.02f\tB: %0.02f\tK: %0.02f" % (np.linalg.cond(A), np.linalg.cond(B), np.linalg.cond(K)))
+            r = trajectory.sample(t)[:4]
+            U_ff = self.feed_forward(r)
+            U_err = Xhat[4:]
+            U = U_ff + K*(r - Xhat[:4]) - U_err
+            U = np.clip(U, -12, 12)
+
+            #A = np.block([[A, B], [np.zeros((2, 4)), np.zeros((2,2))]])
+            #A = np.block([[A, B], [np.zeros((2, 4)), np.identity(2)]])
+            #B = np.block([[B], [np.zeros((2,2))]])
+            #print("A: %0.02f\tB: %0.02f" % (np.linalg.cond(A), np.linalg.cond(B)))
+            """
+            EKF PREDICTION STEP
+            Here, the Extended Kalman Filter predicts what it thinks is going to happen
+            """
+            Xhat = self.simulated_step(Xhat, U, dt = dt)
+            if ignore_err:
+                Xhat[4:] = 0
+            P = A*P*A.T + self.Q_covariance
+
+            current = self.get_current(U, X)
 
             X_list = np.concatenate((X_list, X), 1)
             Xenc_list = np.concatenate((Xenc_list, Xenc), 1)
             Xhat_list = np.concatenate((Xhat_list, Xhat), 1)
             U_list = np.concatenate((U_list, U), 1)
+            U_err_list = np.concatenate((U_err_list, U_err), 1)
+            current_list = np.concatenate((current_list, current), 1)
 
         # Return the results of the simulation as a Bunch
         return Bunch(t = t_vec, X = X_list, Xenc = Xenc_list, \
-            Xhat = Xhat_list, U = U_list)
+            Xhat = Xhat_list, U = U_list, U_err = U_err_list, \
+            current = current_list)
     
     def get_voltage_log(self, sim_solution):
         """Reconstruct the voltage history using the simulation results."""
@@ -350,7 +381,7 @@ class TwoJointArm(object):
         If multiple voltages and states are given as matrices where each column is an entry,
         will return all the currents corresponding to the pairs.
         """
-        omegas = state[2:4]
+        omegas = state[2:4].copy()
         omegas[0,:] = omegas[0,:] * self.G1
         omegas[1,:] = omegas[1,:] * self.G2
         stall_voltage = voltage - omegas/self.Kv
@@ -374,6 +405,8 @@ class TwoJointArm(object):
         """
         if state is None:
             state = self.state
+
+        state = state.copy()
         
         f = lambda x, u: self.simulated_dynamics(x, u)
 
@@ -408,8 +441,8 @@ class TwoJointArm(object):
             if state is None:
                 state = self.state
             (A,B) = self.linearize(state)
-        
-        K = controls.lqr(A, B, self.Q, self.R)
+
+        K = controls.lqr(A[:4,:4], B[:4,:4], self.Q, self.R)
         return K
 
     def sample_encoder(self, X):
