@@ -70,9 +70,9 @@ class TwoJointArm(object):
         self.Q = np.matrix(np.diag([1/pos_tol/pos_tol, 1/pos_tol/pos_tol, 1/vel_tol/vel_tol, 1/vel_tol/vel_tol]))
         self.R = np.matrix(np.diag([1/12.0/12.0, 1/12.0/12.0]))
 
-        self.Q_covariance = 1e0*np.matrix(np.diag([.1**2, .1**2, .1**2, .1**2, 10.0**2, 10.0**2]))
-        self.R_covariance = 1e0*np.matrix(np.diag([.001**2, .001**2, .001**2, .001**2]))
-        self.C = np.matrix(np.block([np.identity(4), np.zeros((4,2))]))
+        self.Q_covariance = 1e0*np.matrix(np.diag([.001**2, .001**2, .001**2, .001**2, 10.0**2, 10.0**2]))
+        self.R_covariance = 1e0*np.matrix(np.diag([.01**2, .01**2]))#, .01**2, .01**2]))
+        self.C = np.matrix(np.block([np.identity(2), np.zeros((2,4))]))
 
         self.last_controller_time = -10
         self.loop_time = 1/50.0
@@ -191,12 +191,12 @@ class TwoJointArm(object):
 
         # Try different disturbances:
         #basic_torque = basic_torque * .5
-        disturbance_torque = np.matrix([150, -100]).T
+        #disturbance_torque = np.matrix([150, -100]).T
         #M = M * 1.5
         #G = G * 2
 
         torque = basic_torque - back_emf_loss + disturbance_torque
-        alpha_vec = M.I*(torque - C*omega_vec - G)
+        alpha_vec = np.linalg.inv(M)*(torque - C*omega_vec - G)
         return np.matrix(np.concatenate((omega_vec, alpha_vec)))
     
     def simulated_dynamics(self, Xhat: np.matrix, U: np.matrix):
@@ -363,12 +363,14 @@ class TwoJointArm(object):
             #(A, B) = self.linearize(np.concatenate((X, np.matrix([0,0]).T)))
             (A, B) = self.linearize(pad_to_shape(KF.get(), (6,1)))
             Acond = np.linalg.cond(A)
+
             
-            if False and np.abs(Xhat[1]) <= .01 and not downsized:
+            
+            if Acond >= 1 and not downsized:
                 print("%0.02f: downsizing" % (t))
                 KF = KF.downsize(4)
                 downsized = True
-            elif np.abs(Xhat[1]) >= .03 and downsized and not ignore_err:
+            elif Acond <= .001 and downsized and not ignore_err:
                 print("%0.02f: upsizing" % (t))
                 KF = KF.upsize(np.concatenate((KF.get(), np.matrix([0,0]).T)), self.Q_covariance)
                 downsized = False
@@ -376,6 +378,9 @@ class TwoJointArm(object):
             if downsized:
                 (A, B) = self.linearize(KF.get())
                 Acond = np.linalg.cond(A)
+                if np.abs(Xhat[1]) <= .1:
+                    print(A)
+                    print(np.linalg.det(A))
             
             Acond_list = np.concatenate((Acond_list, np.matrix([Acond])), 1)
             

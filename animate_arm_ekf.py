@@ -140,7 +140,7 @@ pos_err = sim_results.Xerr[:2,:]
 Kcond = sim_results.Kcond
 Acond = sim_results.Acond
 
-print(Acond.T)
+#print(Acond.T)
 
 ax_1.set_ylim((np.min(voltage_log), np.max(voltage_log)))
 ax_2.set_ylim((np.min(est_pos-target_pos), np.max(est_pos-target_pos)))
@@ -207,4 +207,4 @@ anim = animation.FuncAnimation(fig, animate, init_func = init, frames = nframes,
 
 
 plt.show()                                     # Uncomment this to show plot in window
-#anim.save('sim_ekf_no_resizing_without_unmodelled.gif', writer='imagemagick')     # Uncomment this to save plot as gif
+#anim.save('sim_ekf_no_resizing_with_unmodelled.gif', writer='imagemagick')     # Uncomment this to save plot as gif
