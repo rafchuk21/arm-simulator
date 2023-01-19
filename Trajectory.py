@@ -62,7 +62,11 @@ class Trajectory(object):
         combined.end_time = max(combined.times)
         return combined
     
-    def from_coeffs(coeffs: np.matrix, t0, tf, n = 100) -> Trajectory:
+    
+    def to_table(self) -> np.ndarray:
+        return np.concatenate((self.times, self.states.T), 1)
+
+def from_coeffs(coeffs: np.matrix, t0, tf, n = 100) -> Trajectory:
         """ Generate a trajectory from a polynomial coefficients matrix.
         
         Arguments:
@@ -88,6 +92,47 @@ class Trajectory(object):
 
         states = np.asmatrix(np.concatenate((pos_vec, vel_vec, acc_vec), 1).T)
         return Trajectory(t, states)
+
+def interpolate_states(t0, tf, state0, statef):
+    coeffs = __cubic_interpolation(t0, tf, state0, statef)
+    return from_coeffs(coeffs, t0, tf)
+
+
+def __cubic_interpolation(t0, tf, state0: np.matrix, statef: np.matrix) -> np.matrix:
+    """Perform cubic interpolation between state0 at t = t0 and statef at t = tf.
+    Solves using the matrix equation:
+    -                    -   -        -       -        -
+    | 1    t0   t0^2  t0^3 | | c01  c02 |     | x01  x02 |
+    | 0    1   2t0   3t0^2 | | c11  c12 |  =  | v01  v02 |
+    | 1    tf   tf^2  tf^3 | | c21  c22 |     | xf1  xf2 |
+    | 0    1   2tf   3tf^2 | | c31  c32 |     | vf1  vf2 |
+    -                    -   -        -       -        -
     
-    def to_table(self) -> np.ndarray:
-        return np.concatenate((self.times, self.states.T), 1)
+    To find the cubic polynomials:
+    x1(t) = c01 + c11t + c21t^2 + c31t^3
+    x2(t) = c02 + c12t + c22t^2 + c32t^3
+    where x1 is the first joint position and x2 is the second joint position, such that
+    the arm is in state0 [x01, x02, v01, v02].T at t0 and statef [xf1, xf2, vf1, vf2].T at tf.
+
+    Make sure to only use the interpolated cubic for t between t0 and tf.
+
+    Arguments:
+        t0 - start time of interpolation
+        tf - end time of interpolation
+        state0 - start state [theta1, theta2, omega1, omega2].T
+        statef - end state [theta1, theta2, omega1, omega2].T
+    
+    Returns:
+        coeffs - 4x2 matrix containing the interpolation coefficients for joint 1 in
+                column 1 and joint 2 in column 2
+    """
+    pos_row = lambda t: np.matrix([1, t, t*t, t*t*t])
+    vel_row = lambda t: np.matrix([0, 1, 2*t, 3*t*t])
+
+    # right hand side matrix
+    rhs = np.concatenate((state0.reshape((2,2)), statef.reshape(2,2)))
+    # left hand side matrix
+    lhs = np.concatenate((pos_row(t0), vel_row(t0), pos_row(tf), vel_row(tf)))
+
+    coeffs = lhs.I*rhs
+    return coeffs

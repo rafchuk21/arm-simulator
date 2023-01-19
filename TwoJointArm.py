@@ -259,7 +259,7 @@ class TwoJointArm(object):
         sim_res = solve_ivp(self.get_dstate, t_span, initial_state, t_eval = t_eval, max_step = self.loop_time)
         return sim_res
     
-    def simulate_with_ekf(self, trajectory: Trajectory, t_span, initial_state: np.matrix = None, dt = .02):
+    def simulate_with_ekf(self, trajectory: Trajectory, t_span, initial_state: np.matrix = None, dt = .005):
         """ Simulate the arm including input error estimation. This is an alternative to using an 
         integral term to account from real-world deviations from the model, since the integral term
         is generally suboptimal.
@@ -361,7 +361,7 @@ class TwoJointArm(object):
             """
 
             #(A, B) = self.linearize(np.concatenate((X, np.matrix([0,0]).T)))
-            (A, B) = self.linearize(pad_to_shape(KF.get(), (6,1)))
+            (A, B) = self.linearize(pad_to_shape(KF.get(), (6,1)), dt = dt)
             Acond = np.linalg.cond(A)
 
             
@@ -376,7 +376,7 @@ class TwoJointArm(object):
                 downsized = False
             
             if downsized:
-                (A, B) = self.linearize(KF.get())
+                (A, B) = self.linearize(KF.get(), dt = dt)
                 Acond = np.linalg.cond(A)
                 if np.abs(Xhat[1]) <= .1:
                     print(A)
@@ -455,7 +455,7 @@ class TwoJointArm(object):
             voltage_log = self.get_voltage_log(sim_solution)
         return self.get_current(voltage_log, sim_solution.y)
     
-    def linearize(self, state = None, eps = 1e-4, dt = .02):
+    def linearize(self, state = None, eps = 1e-4, dt = .005):
         """Get the arm model linearized at a stationary point at the current state.
         Generates the stationary point voltage using feed_forward() function.
         
